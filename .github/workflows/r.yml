@@ -1,0 +1,81 @@
+name: Build Real‑ESRGAN‑ncnn‑vulkan
+
+on:
+  push:
+    tags:
+      - 'v*'      # 打tag如 v1.0.0 触发构建Release
+  workflow_dispatch: # 支持手动点击运行
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-22.04
+    strategy:
+      matrix:
+        arch: [x86_64, aarch64]
+
+    steps:
+      - name: Checkout code with submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive  # 自动拉取ncnn子模块
+
+      - name: Install dependencies x86_64
+        if: matrix.arch == 'x86_64'
+        run: |
+          sudo apt update
+          sudo apt install -y cmake build-essential libvulkan-dev glslang-dev glslang-tools
+
+      - name: Install cross‑compile toolchain for aarch64
+        if: matrix.arch == 'aarch64'
+        run: |
+          sudo apt update
+          sudo apt install -y cmake build-essential crossbuild-essential-arm64 libvulkan-dev:arm64 glslang-dev:arm64
+
+      - name: Cmake configure
+        run: |
+          mkdir -p build
+          cd build
+          if [ "${{ matrix.arch }}" = "aarch64" ];then
+            cmake ../src \
+              -DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc \
+              -DCMAKE_CXX_COMPILER=aarch64-linux-gnu-g++ \
+              -DCMAKE_TOOLCHAIN_FILE=${GITHUB_WORKSPACE}/src/ncnn/toolchains/aarch64-linux-gnu.toolchain.cmake
+          else
+            cmake ../src
+          fi
+
+      - name: Compile
+        run: |
+          cd build
+          make -j$(nproc)
+
+      - name: Collect artifacts
+        run: |
+          mkdir -p deploy/models
+          cp build/realesrgan-ncnn-vulkan deploy/
+          cp -r models/* deploy/models/
+          cd deploy
+          tar -zcvf realesrgan-ncnn-vulkan-${{ matrix.arch }}-linux.tar.gz *
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          path: deploy/realesrgan-ncnn-vulkan-${{ matrix.arch }}-linux.tar.gz
+          name: ${{ matrix.arch }}‑linux‑build
+
+  release:
+    needs: build-linux
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+
+      - name: Generate Release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: |
+            */*.tar.gz
+          generate_release_notes: true
