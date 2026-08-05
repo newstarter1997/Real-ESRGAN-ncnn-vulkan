@@ -1,0 +1,91 @@
+name: Build Real‑ESRGAN‑ncnn‑vulkan
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    strategy:
+      matrix:
+        arch: [x86_64, aarch64]
+    steps:
+      - name: Checkout code with submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Build x86_64 (native)
+        if: matrix.arch == 'x86_64'
+        run: |
+          sudo apt update
+          sudo apt install -y cmake build-essential libvulkan-dev glslang-dev glslang-tools
+          mkdir build && cd build
+          cmake ../src
+          make -j$(nproc)
+          mkdir -p deploy/models
+          cp build/realesrgan-ncnn-vulkan deploy/
+          cp -r models/* deploy/models/
+          cd deploy
+          tar -zcvf realesrgan-ncnn-vulkan-x86_64-linux.tar.gz *
+
+      - name: Build aarch64‑linux via qemu chroot
+        if: matrix.arch == 'aarch64'
+        uses: multiarch/qemu-user-static@release/7.0.x
+        with:
+          reset: yes
+
+      - name: Prepare aarch64 chroot env
+        if: matrix.arch == 'aarch64'
+        run: |
+          sudo apt update
+          sudo apt install -y debootstrap schroot
+          sudo debootstrap --arch=arm64 jammy ./arm64-root http://ports.ubuntu.com/ubuntu-ports
+          sudo cp /usr/bin/qemu-aarch64-static ./arm64-root/usr/bin/
+          sudo mount --bind ./ ./arm64-root/workspace
+          cat <<EOF | sudo chroot ./arm64-root
+          
+          cd /workspace
+          apt update
+          apt install -y cmake build-essential libvulkan-dev glslang-dev glslang-tools git
+          mkdir build && cd build
+          cmake ../src
+          make -j\$(nproc)
+          mkdir -p deploy/models
+          cp build/realesrgan-ncnn-vulkan deploy/
+          cp -r models/* deploy/models/
+          cd deploy
+          tar -zcvf realesrgan-ncnn-vulkan-aarch64-linux.tar.gz *
+          EOF
+         
+          sudo umount ./arm64-root/workspace
+
+      - name: Collect artifact
+        if: matrix.arch == 'aarch64'
+        run: |
+          cp ./arm64-root/workspace/deploy/realesrgan-ncnn-vulkan-aarch64-linux.tar.gz ./
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.arch }}‑linux‑pkg
+          path: realesrgan-ncnn-vulkan‑*.tar.gz
+
+  release:
+    needs: build
+    runs-on: ubuntu‑22.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+      - name: Publish Release
+        uses: softprops/action‑gh‑release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: |
+            */*.tar.gz
+          generate_release_notes: true
